@@ -26,7 +26,7 @@ import { ChatGPTClient } from "./chatgpt/client.js";
 import { BrowserPersonaRunner } from "./browser/runner.js";
 import { poolFromEnv } from "./proxy/pool.js";
 import { ensureHome, identityExists, personaDir, readIdentity } from "./storage.js";
-import { asPersonaId, PersonaId } from "./types.js";
+import { asPersonaId, PersonaId, AuthState } from "./types.js";
 import { listPersonaIds, readEnrichedIndex } from "./registry.js";
 import { getSeed, PERSONA_SEEDS } from "./seeds/index.js";
 
@@ -39,6 +39,7 @@ Usage:
   pnpm personas --create-account <seed-id>   [BROWSER] signs up a real account
   pnpm personas --status [<id>]
   pnpm personas --validate <id>
+  pnpm personas --import-session <id> "<token>" [--cf "<cf_clearance>"]
   pnpm personas --probe <id> "<prompt>"
   pnpm personas --converse <id> <file>
   pnpm personas --batch <id> <file>
@@ -158,6 +159,16 @@ async function main(): Promise<void> {
 
   // Network-bearing commands
   if (flag("--validate")) return cmdValidate(pm, asPersonaId(arg("--validate")!));
+  if (flag("--import-session")) {
+    const id = asPersonaId(arg("--import-session")!);
+    const token = positional(1);
+    const cf = arg("--cf");
+    if (!token) {
+      console.error('Usage: pnpm personas --import-session <id> "<session_token>" [--cf "<cf_clearance>"]');
+      process.exit(1);
+    }
+    return cmdImportSession(pm, id, token, cf);
+  }
   if (flag("--probe")) {
     const id = asPersonaId(arg("--probe")!);
     const prompt = arg("--prompt") ?? positional(1);
@@ -628,6 +639,34 @@ async function cmdBatch(pm: PersonaManager, id: PersonaId, file?: string): Promi
     }
   }
   console.log(`\nDONE. ${totalAds} ads across ${prompts.length} prompts.`);
+}
+
+async function cmdImportSession(
+  pm: PersonaManager,
+  id: PersonaId,
+  token: string,
+  cf?: string,
+): Promise<void> {
+  const { randomUUID } = await import("node:crypto");
+  const existing = await pm.loadAuth(id).catch(() => null);
+  const deviceId = existing?.deviceId ?? randomUUID();
+  const auth: AuthState = {
+    sessionToken: token,
+    accessToken: null,
+    accessTokenExp: null,
+    cfClearance: cf ?? null,
+    cfClearanceExp: cf ? Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60 : null,
+    deviceId,
+    puid: null,
+    lastValidatedAt: new Date().toISOString(),
+    health: "unknown",
+    sessionStartedAt: new Date().toISOString(),
+    accountState: "UNKNOWN",
+    plan: "unknown",
+  };
+  await pm.persistAuth(id, auth);
+  await pm.audit(id, "session_obtained", "manual import");
+  console.log(`✅ Session imported for ${id}. Run pnpm personas --validate ${id} to verify.`);
 }
 
 function pad(s: string, n: number): string {
